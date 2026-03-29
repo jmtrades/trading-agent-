@@ -131,10 +131,10 @@ class RiskManager:
         trailing_stop = self.config.get("trailing_stop_pct", 0.015)
 
         # Use ATR-based stops (wider in volatile markets, tighter in calm)
-        atr_stop = (current_atr * 1.5) / current_price
+        atr_stop = (current_atr * 2.0) / current_price
         stop_distance = max(stop_loss_pct, atr_stop)
-        # Risk:reward at least 3:1 for edge
-        profit_distance = max(take_profit_pct, stop_distance * 3)
+        # Risk:reward 2:1 - balances win rate with payoff
+        profit_distance = max(take_profit_pct, stop_distance * 2)
 
         if side == OrderSide.BUY:
             stop_loss = current_price * (1 - stop_distance)

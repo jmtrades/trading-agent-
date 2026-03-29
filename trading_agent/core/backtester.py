@@ -2,16 +2,20 @@
 
 Simulates trading with realistic conditions:
 - Sequential candle processing (no lookahead bias)
+- Full filter pipeline (regime, consensus, MTF, quality, cooldown)
 - Slippage simulation
 - Commission handling
 - Full trade logging and statistics
 """
-import json
 import numpy as np
-from typing import Optional
 from .models import Candle, Signal, OrderSide
 from .market_data import MarketData
 from .risk_manager import RiskManager
+from .regime_detector import RegimeDetector, MarketRegime
+from .filters import (
+    MultiTimeframeFilter, ConsensusFilter,
+    TradeQualityScorer, CooldownFilter, SignalPersistenceFilter,
+)
 
 
 class Backtester:
@@ -25,12 +29,24 @@ class Backtester:
         self.commission_pct = commission_pct
 
     def run(self, candles: list[Candle], warmup: int = 50) -> dict:
-        """Run backtest on historical candles."""
+        """Run backtest on historical candles with full filter pipeline."""
         market_data = MarketData(max_candles=500)
         risk_manager = RiskManager(self.config.get("risk", {}), self.initial_capital)
 
+        # Initialize filters
+        regime_detector = RegimeDetector(lookback=50)
+        mtf_filter = MultiTimeframeFilter(multiplier=4)
+        consensus_filter = ConsensusFilter(min_agreement=2)
+        quality_scorer = TradeQualityScorer(min_quality=0.65)
+        cooldown_filter = CooldownFilter(cooldown_bars=3, loss_cooldown_bars=8)
+        persistence_filter = SignalPersistenceFilter(required_bars=3)
+
         equity_curve = []
         signals_log = []
+        filter_stats = {"regime_blocked": 0, "cooldown_blocked": 0,
+                        "consensus_blocked": 0, "mtf_blocked": 0,
+                        "quality_blocked": 0, "persistence_blocked": 0,
+                        "passed": 0}
 
         for i, candle in enumerate(candles):
             market_data.add_candle(candle)
@@ -43,76 +59,119 @@ class Backtester:
             # Update existing positions
             exits = risk_manager.update_positions(candle.close)
             for exit_info in exits:
+                was_loss = exit_info.get("pnl", 0) < 0
+                cooldown_filter.record_trade(i, was_loss)
                 signals_log.append({
-                    "bar": i,
-                    "type": "exit",
-                    "price": candle.close,
+                    "bar": i, "type": "exit", "price": candle.close,
                     **exit_info
                 })
 
-            # Get signals from all strategies
+            # FILTER 1: Market regime
+            regime, regime_conf = regime_detector.detect(market_data)
+            if regime == MarketRegime.VOLATILE_CHAOS:
+                equity_curve.append(self._calc_equity(risk_manager))
+                filter_stats["regime_blocked"] += 1
+                continue
+
+            # FILTER 2: Cooldown
+            can_trade, _ = cooldown_filter.can_trade(i)
+            if not can_trade:
+                equity_curve.append(self._calc_equity(risk_manager))
+                filter_stats["cooldown_blocked"] += 1
+                continue
+
+            # Get signals from all strategies with regime-adaptive weights
+            regime_weights = regime_detector.get_strategy_weights(regime)
             strategy_signals = []
             for strategy in self.strategies:
                 sig = strategy.analyze(market_data)
                 strategy_signals.append(sig)
 
-            # Combine signals (weighted vote)
+            # Combine signals (regime-adaptive weighted vote)
             combined_score = 0.0
             total_weight = 0.0
             for sig in strategy_signals:
-                weight = next(
-                    (s.weight for s in self.strategies
-                     if s.name == sig.strategy_name),
-                    0.33
-                )
-                combined_score += sig.signal.value * sig.confidence * weight
-                total_weight += weight
+                weight = regime_weights.get(sig.strategy_name, 0.33)
+                if weight > 0:
+                    combined_score += sig.signal.value * sig.confidence * weight
+                    total_weight += weight
 
             if total_weight > 0:
                 combined_score /= total_weight
 
-            # Execute based on combined signal
-            if combined_score >= 0.15:
+            # Record score for persistence tracking
+            persistence_filter.record_score(combined_score)
+
+            # Determine side
+            side = None
+            if combined_score >= 0.25:
                 side = OrderSide.BUY
-                signal = strategy_signals[0]  # Use first for metadata
-                signal.confidence = min(abs(combined_score), 1.0)
-                order = risk_manager.create_order(market_data, signal, side)
-                if order:
-                    # Apply slippage
-                    order.price *= (1 + self.slippage_pct)
-                    pos = risk_manager.open_position(order)
-                    signals_log.append({
-                        "bar": i,
-                        "type": "entry",
-                        "side": "buy",
-                        "price": order.price,
-                        "quantity": order.quantity,
-                        "score": combined_score,
-                    })
-
-            elif combined_score <= -0.15:
+            elif combined_score <= -0.25:
                 side = OrderSide.SELL
-                signal = strategy_signals[0]
-                signal.confidence = min(abs(combined_score), 1.0)
-                order = risk_manager.create_order(market_data, signal, side)
-                if order:
-                    order.price *= (1 - self.slippage_pct)
-                    pos = risk_manager.open_position(order)
-                    signals_log.append({
-                        "bar": i,
-                        "type": "entry",
-                        "side": "sell",
-                        "price": order.price,
-                        "quantity": order.quantity,
-                        "score": combined_score,
-                    })
 
-            # Track equity
-            position_value = sum(
-                p.entry_price * p.quantity * (1 + p.pnl)
-                for p in risk_manager.open_positions
+            if side is None:
+                equity_curve.append(self._calc_equity(risk_manager))
+                continue
+
+            # FILTER: Signal persistence
+            persist_ok, _ = persistence_filter.check(side)
+            if not persist_ok:
+                equity_curve.append(self._calc_equity(risk_manager))
+                filter_stats["persistence_blocked"] += 1
+                continue
+
+            # Only check consensus among regime-relevant strategies
+            relevant_signals = [
+                s for s in strategy_signals
+                if regime_weights.get(s.strategy_name, 0) >= 0.15
+            ]
+
+            # FILTER 3: Consensus (among relevant strategies only)
+            consensus_ok, _ = consensus_filter.check(relevant_signals, side)
+            if not consensus_ok:
+                equity_curve.append(self._calc_equity(risk_manager))
+                filter_stats["consensus_blocked"] += 1
+                continue
+
+            # FILTER 4: Multi-timeframe alignment
+            mtf_ok, _ = mtf_filter.check_alignment(market_data, side)
+            if not mtf_ok:
+                equity_curve.append(self._calc_equity(risk_manager))
+                filter_stats["mtf_blocked"] += 1
+                continue
+
+            # FILTER 5: Trade quality
+            quality, quality_ok, _ = quality_scorer.score(
+                strategy_signals, market_data, side
             )
-            equity_curve.append(risk_manager.capital + position_value)
+            if not quality_ok:
+                equity_curve.append(self._calc_equity(risk_manager))
+                filter_stats["quality_blocked"] += 1
+                continue
+
+            # ALL FILTERS PASSED - execute
+            filter_stats["passed"] += 1
+            signal = max(strategy_signals, key=lambda s: s.confidence)
+            signal.confidence = min(abs(combined_score) * quality, 1.0)
+            order = risk_manager.create_order(market_data, signal, side)
+
+            if order:
+                # Apply slippage
+                if side == OrderSide.BUY:
+                    order.price *= (1 + self.slippage_pct)
+                else:
+                    order.price *= (1 - self.slippage_pct)
+
+                risk_manager.open_position(order)
+                cooldown_filter.record_trade(i)
+                signals_log.append({
+                    "bar": i, "type": "entry", "side": side.value,
+                    "price": order.price, "quantity": order.quantity,
+                    "score": combined_score, "quality": quality,
+                    "regime": regime.value,
+                })
+
+            equity_curve.append(self._calc_equity(risk_manager))
 
         # Final stats
         stats = risk_manager.get_stats()
@@ -134,8 +193,16 @@ class Backtester:
         stats["equity_curve"] = equity_curve
         stats["signals"] = signals_log
         stats["total_candles"] = len(candles)
+        stats["filter_stats"] = filter_stats
 
         return stats
+
+    @staticmethod
+    def _calc_equity(risk_manager: RiskManager) -> float:
+        return risk_manager.capital + sum(
+            p.entry_price * p.quantity * (1 + p.pnl)
+            for p in risk_manager.open_positions
+        )
 
     @staticmethod
     def generate_synthetic_data(n_candles: int = 1000, trend: str = "mixed",

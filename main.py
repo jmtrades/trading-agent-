@@ -50,6 +50,16 @@ def run_backtest(market: str = "mixed", n_candles: int = 1000):
     print(f"  Avg Win:           ${results['avg_win']:.2f}")
     print(f"  Avg Loss:          ${results['avg_loss']:.2f}")
     print(f"  Final Capital:     ${results['capital']:.2f}")
+    if "filter_stats" in results:
+        fs = results["filter_stats"]
+        print(f"  ---")
+        print(f"  Signals Generated: {fs.get('passed', 0) + fs.get('consensus_blocked', 0) + fs.get('mtf_blocked', 0) + fs.get('quality_blocked', 0)}")
+        print(f"  Regime Blocked:    {fs.get('regime_blocked', 0)}")
+        print(f"  Cooldown Blocked:  {fs.get('cooldown_blocked', 0)}")
+        print(f"  Consensus Blocked: {fs.get('consensus_blocked', 0)}")
+        print(f"  MTF Blocked:       {fs.get('mtf_blocked', 0)}")
+        print(f"  Quality Blocked:   {fs.get('quality_blocked', 0)}")
+        print(f"  Trades Executed:   {fs.get('passed', 0)}")
     print("=" * 60)
 
     return results
