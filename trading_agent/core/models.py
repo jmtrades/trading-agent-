@@ -73,6 +73,8 @@ class Position:
     status: PositionStatus = PositionStatus.OPEN
     entry_time: float = field(default_factory=time.time)
     pnl: float = 0.0
+    bars_held: int = 0
+    max_bars: int = 50  # Time-based exit: close zombie trades
 
     def __post_init__(self):
         if self.highest_price == 0.0:
@@ -84,6 +86,13 @@ class Position:
         """Update position with current price. Returns exit reason if stopped out."""
         if self.status == PositionStatus.CLOSED:
             return None
+
+        self.bars_held += 1
+
+        # Time-based exit: close zombie trades that go nowhere
+        if self.bars_held >= self.max_bars:
+            self.status = PositionStatus.CLOSED
+            return "timeout"
 
         if self.side == OrderSide.BUY:
             self.highest_price = max(self.highest_price, current_price)

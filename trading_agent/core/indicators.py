@@ -42,7 +42,9 @@ def rsi(close: np.ndarray, period: int = 14) -> np.ndarray:
         avg_gain = (avg_gain * (period - 1) + gains[i]) / period
         avg_loss = (avg_loss * (period - 1) + losses[i]) / period
 
-        if avg_loss == 0:
+        if avg_loss == 0 and avg_gain == 0:
+            result[i + 1] = 50.0  # Flat price = neutral, not overbought
+        elif avg_loss == 0:
             result[i + 1] = 100.0
         else:
             rs = avg_gain / avg_loss
@@ -152,7 +154,8 @@ def adx(high: np.ndarray, low: np.ndarray, close: np.ndarray,
 
     di_sum = plus_di + minus_di
     di_diff = np.abs(plus_di - minus_di)
-    dx = np.where((di_sum > 0) & ~np.isnan(di_sum), 100 * di_diff / di_sum, 0)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        dx = np.where((di_sum > 0) & ~np.isnan(di_sum), 100 * di_diff / di_sum, 0)
 
     # Smooth DX to get ADX
     valid_dx = dx[~np.isnan(dx)]

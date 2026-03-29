@@ -53,7 +53,11 @@ class RiskManager:
         max_positions = self.config.get("max_open_positions", 5)
 
         if self._circuit_breaker_active:
-            return False, "Circuit breaker active - max drawdown exceeded"
+            # Reset circuit breaker when drawdown recovers to 50% of threshold
+            if self.current_drawdown < max_dd * 0.5:
+                self._circuit_breaker_active = False
+            else:
+                return False, "Circuit breaker active - max drawdown exceeded"
 
         if self.current_drawdown >= max_dd:
             self._circuit_breaker_active = True
