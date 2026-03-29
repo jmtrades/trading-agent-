@@ -46,9 +46,15 @@ def run_backtest(market: str = "mixed", n_candles: int = 1000):
     print(f"  Total Return:      {results['total_return_pct']:.1%}")
     print(f"  Max Drawdown:      {results['max_drawdown_pct']:.1%}")
     print(f"  Sharpe Ratio:      {results['sharpe_ratio']:.2f}")
+    print(f"  Sortino Ratio:     {results.get('sortino_ratio', 0):.2f}")
+    print(f"  Calmar Ratio:      {results.get('calmar_ratio', 0):.2f}")
     print(f"  Profit Factor:     {results['profit_factor']:.2f}")
+    print(f"  Expectancy:        ${results.get('expectancy', 0):.2f}")
     print(f"  Avg Win:           ${results['avg_win']:.2f}")
     print(f"  Avg Loss:          ${results['avg_loss']:.2f}")
+    print(f"  Max Win Streak:    {results.get('max_win_streak', 0)}")
+    print(f"  Max Loss Streak:   {results.get('max_consecutive_losses', 0)}")
+    print(f"  Kelly Fraction:    {results.get('kelly_fraction', 1.0):.2f}")
     print(f"  Final Capital:     ${results['capital']:.2f}")
     if "filter_stats" in results:
         fs = results["filter_stats"]

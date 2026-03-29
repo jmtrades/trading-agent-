@@ -100,18 +100,18 @@ class TestBreakoutStrategy:
         assert signal.signal == Signal.NEUTRAL
 
     def test_bullish_breakout(self, strategy):
-        # Consolidation then breakout above with volume
-        prices = [100 + np.random.uniform(-1, 1) for _ in range(50)]
+        # Consolidation then breakout above with volume (70 bars for Ichimoku warmup)
+        prices = [100 + np.random.uniform(-1, 1) for _ in range(70)]
         prices.append(110)  # Breakout candle
-        volumes = [1000] * 50 + [3000]  # Volume spike
+        volumes = [1000] * 70 + [3000]  # Volume spike
         md = make_market_data(prices, volumes)
         signal = strategy.analyze(md)
         assert signal.signal.value >= 1  # Buy or strong buy
 
     def test_no_breakout_without_volume(self, strategy):
-        prices = [100 + np.random.uniform(-1, 1) for _ in range(50)]
+        prices = [100 + np.random.uniform(-1, 1) for _ in range(70)]
         prices.append(110)
-        volumes = [1000] * 50 + [500]  # Low volume
+        volumes = [1000] * 70 + [500]  # Low volume
         md = make_market_data(prices, volumes)
         signal = strategy.analyze(md)
         # Should have lower confidence without volume

@@ -147,12 +147,12 @@ def adx(high: np.ndarray, low: np.ndarray, close: np.ndarray,
     full_plus[1:] = smooth_plus_dm
     full_minus[1:] = smooth_minus_dm
 
-    plus_di = np.where(atr_vals > 0, 100 * full_plus / atr_vals, 0)
-    minus_di = np.where(atr_vals > 0, 100 * full_minus / atr_vals, 0)
+    plus_di = np.where((atr_vals > 0) & ~np.isnan(full_plus), 100 * full_plus / atr_vals, 0)
+    minus_di = np.where((atr_vals > 0) & ~np.isnan(full_minus), 100 * full_minus / atr_vals, 0)
 
     di_sum = plus_di + minus_di
     di_diff = np.abs(plus_di - minus_di)
-    dx = np.where(di_sum > 0, 100 * di_diff / di_sum, 0)
+    dx = np.where((di_sum > 0) & ~np.isnan(di_sum), 100 * di_diff / di_sum, 0)
 
     # Smooth DX to get ADX
     valid_dx = dx[~np.isnan(dx)]
@@ -166,3 +166,156 @@ def adx(high: np.ndarray, low: np.ndarray, close: np.ndarray,
             result[adx_start:end] = valid_adx
 
     return result
+
+
+def stochastic(high: np.ndarray, low: np.ndarray, close: np.ndarray,
+               k_period: int = 14, d_period: int = 3) -> Tuple[np.ndarray, np.ndarray]:
+    """Stochastic Oscillator: returns (%K, %D).
+
+    Measures where price closed relative to the high-low range.
+    """
+    k = np.full_like(close, np.nan, dtype=float)
+
+    for i in range(k_period - 1, len(close)):
+        highest = np.max(high[i - k_period + 1:i + 1])
+        lowest = np.min(low[i - k_period + 1:i + 1])
+        if highest != lowest:
+            k[i] = 100 * (close[i] - lowest) / (highest - lowest)
+        else:
+            k[i] = 50.0
+
+    d = sma(k, d_period)
+    return k, d
+
+
+def obv(close: np.ndarray, volume: np.ndarray) -> np.ndarray:
+    """On-Balance Volume - tracks cumulative volume flow."""
+    result = np.zeros_like(close, dtype=float)
+    result[0] = volume[0]
+
+    for i in range(1, len(close)):
+        if close[i] > close[i - 1]:
+            result[i] = result[i - 1] + volume[i]
+        elif close[i] < close[i - 1]:
+            result[i] = result[i - 1] - volume[i]
+        else:
+            result[i] = result[i - 1]
+
+    return result
+
+
+def ichimoku(high: np.ndarray, low: np.ndarray, close: np.ndarray,
+             tenkan: int = 9, kijun: int = 26,
+             senkou_b: int = 52) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Ichimoku Cloud: returns (tenkan_sen, kijun_sen, senkou_span_a, senkou_span_b)."""
+    def midpoint(data_h, data_l, period):
+        r = np.full(len(data_h), np.nan, dtype=float)
+        for i in range(period - 1, len(data_h)):
+            r[i] = (np.max(data_h[i - period + 1:i + 1]) +
+                     np.min(data_l[i - period + 1:i + 1])) / 2
+        return r
+
+    tenkan_sen = midpoint(high, low, tenkan)
+    kijun_sen = midpoint(high, low, kijun)
+
+    span_a = np.full(len(close), np.nan, dtype=float)
+    valid_mask = ~np.isnan(tenkan_sen) & ~np.isnan(kijun_sen)
+    span_a[valid_mask] = (tenkan_sen[valid_mask] + kijun_sen[valid_mask]) / 2
+
+    span_b = midpoint(high, low, senkou_b)
+
+    return tenkan_sen, kijun_sen, span_a, span_b
+
+
+def williams_r(high: np.ndarray, low: np.ndarray, close: np.ndarray,
+               period: int = 14) -> np.ndarray:
+    """Williams %R - momentum oscillator."""
+    result = np.full_like(close, np.nan, dtype=float)
+
+    for i in range(period - 1, len(close)):
+        highest = np.max(high[i - period + 1:i + 1])
+        lowest = np.min(low[i - period + 1:i + 1])
+        if highest != lowest:
+            result[i] = -100 * (highest - close[i]) / (highest - lowest)
+        else:
+            result[i] = -50.0
+
+    return result
+
+
+def mfi(high: np.ndarray, low: np.ndarray, close: np.ndarray,
+        volume: np.ndarray, period: int = 14) -> np.ndarray:
+    """Money Flow Index - volume-weighted RSI."""
+    result = np.full_like(close, np.nan, dtype=float)
+    if len(close) < period + 1:
+        return result
+
+    typical = (high + low + close) / 3.0
+    raw_mf = typical * volume
+
+    for i in range(period, len(close)):
+        pos_flow = 0.0
+        neg_flow = 0.0
+        for j in range(i - period + 1, i + 1):
+            if j > 0 and typical[j] > typical[j - 1]:
+                pos_flow += raw_mf[j]
+            elif j > 0:
+                neg_flow += raw_mf[j]
+        if neg_flow > 0:
+            result[i] = 100 - (100 / (1 + pos_flow / neg_flow))
+        else:
+            result[i] = 100.0
+
+    return result
+
+
+def price_rate_of_change(close: np.ndarray, period: int = 12) -> np.ndarray:
+    """Rate of Change - momentum as percentage change over N periods."""
+    result = np.full_like(close, np.nan, dtype=float)
+    for i in range(period, len(close)):
+        if close[i - period] != 0:
+            result[i] = (close[i] - close[i - period]) / close[i - period] * 100
+    return result
+
+
+def keltner_channels(high: np.ndarray, low: np.ndarray, close: np.ndarray,
+                     ema_period: int = 20, atr_period: int = 14,
+                     atr_mult: float = 2.0) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Keltner Channels: returns (upper, middle, lower). ATR-based bands."""
+    middle = ema(close, ema_period)
+    atr_vals = atr(high, low, close, atr_period)
+    upper = middle + atr_mult * atr_vals
+    lower = middle - atr_mult * atr_vals
+    return upper, middle, lower
+
+
+def squeeze_detector(high: np.ndarray, low: np.ndarray, close: np.ndarray,
+                     bb_period: int = 20, bb_std: float = 2.0,
+                     kc_period: int = 20, kc_mult: float = 1.5) -> Tuple[np.ndarray, np.ndarray]:
+    """TTM Squeeze: detects when Bollinger Bands are inside Keltner Channels.
+
+    Returns (squeeze_on, momentum). squeeze_on is boolean array,
+    momentum is the directional component.
+    """
+    bb_upper, bb_mid, bb_lower = bollinger_bands(close, bb_period, bb_std)
+    kc_upper, kc_mid, kc_lower = keltner_channels(high, low, close, kc_period, 14, kc_mult)
+
+    squeeze_on = np.zeros(len(close), dtype=float)
+    momentum = np.full_like(close, np.nan, dtype=float)
+
+    for i in range(max(bb_period, kc_period) - 1, len(close)):
+        if not (np.isnan(bb_upper[i]) or np.isnan(kc_upper[i])):
+            # Squeeze is ON when BB is inside KC
+            squeeze_on[i] = 1.0 if (bb_lower[i] > kc_lower[i] and bb_upper[i] < kc_upper[i]) else 0.0
+
+    # Momentum: linear regression of close minus midline
+    lookback = bb_period
+    for i in range(lookback + 10, len(close)):
+        delta = close[i - lookback:i] - bb_mid[i - lookback:i]
+        valid = delta[~np.isnan(delta)]
+        if len(valid) >= 5:
+            x = np.arange(len(valid))
+            coeffs = np.polyfit(x, valid, 1)
+            momentum[i] = coeffs[0] * len(valid) + coeffs[1]  # endpoint of regression
+
+    return squeeze_on, momentum

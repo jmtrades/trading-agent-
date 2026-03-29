@@ -208,13 +208,23 @@ class Backtester:
     def generate_synthetic_data(n_candles: int = 1000, trend: str = "mixed",
                                 volatility: float = 0.02, base_price: float = 100.0,
                                 base_volume: float = 1000.0) -> list[Candle]:
-        """Generate realistic synthetic candle data for testing.
+        """Generate realistic synthetic candle data with market microstructure.
+
+        Features:
+        - Volatility clustering (GARCH-like): volatile periods cluster together
+        - Fat tails: occasional large moves (more realistic than normal distribution)
+        - Mean-reverting volatility: extreme vol reverts to normal
+        - Volume-price correlation: volume spikes on big moves
+        - Support/resistance levels: price tends to bounce at round numbers
+        - Momentum persistence: trends last for multiple bars
 
         Supports trend types: 'bull', 'bear', 'mixed', 'sideways'
         """
         np.random.seed(42)
         candles = []
         price = base_price
+        current_vol = volatility
+        momentum = 0.0
 
         for i in range(n_candles):
             # Trend bias
@@ -228,19 +238,43 @@ class Backtester:
             else:  # sideways
                 drift = 0.0
 
-            # Random walk with drift
-            change = np.random.normal(drift, volatility)
-            new_price = price * (1 + change)
+            # GARCH-like volatility clustering
+            vol_shock = np.random.normal(0, 0.3)
+            current_vol = 0.85 * current_vol + 0.10 * volatility + 0.05 * abs(vol_shock) * volatility
+            current_vol = max(volatility * 0.3, min(current_vol, volatility * 3.0))
 
-            # Generate OHLCV
-            intra_vol = abs(change) + volatility * 0.5
+            # Fat-tailed returns (Student's t with 4 degrees of freedom)
+            t_return = np.random.standard_t(4) * current_vol / 2
+            normal_return = np.random.normal(0, current_vol)
+            # Mix: 80% normal, 20% fat-tailed
+            raw_return = 0.8 * normal_return + 0.2 * t_return
+
+            # Momentum persistence (autocorrelation)
+            momentum = 0.3 * momentum + 0.7 * raw_return
+            change = drift + momentum
+
+            # Support/resistance at round numbers
+            round_level = round(price / 10) * 10
+            distance_to_round = (price - round_level) / price
+            if abs(distance_to_round) < 0.005:
+                # Price tends to bounce off round numbers
+                change -= distance_to_round * 0.3
+
+            new_price = price * (1 + change)
+            new_price = max(new_price, base_price * 0.1)  # Floor
+
+            # Generate OHLCV with realistic intrabar movement
+            intra_vol = abs(change) + current_vol * 0.5
             o = price
             c = new_price
-            h = max(o, c) * (1 + abs(np.random.normal(0, intra_vol * 0.3)))
-            l = min(o, c) * (1 - abs(np.random.normal(0, intra_vol * 0.3)))
-            # Volume spikes on big moves
+            h = max(o, c) * (1 + abs(np.random.exponential(intra_vol * 0.3)))
+            l = min(o, c) * (1 - abs(np.random.exponential(intra_vol * 0.3)))
+            l = max(l, 0.01)
+
+            # Volume: spikes on big moves and at support/resistance
             vol_spike = 1 + abs(change) / volatility
-            v = base_volume * vol_spike * (1 + np.random.uniform(-0.3, 0.3))
+            sr_vol_boost = 1.5 if abs(distance_to_round) < 0.01 else 1.0
+            v = base_volume * vol_spike * sr_vol_boost * (1 + np.random.exponential(0.3))
 
             candles.append(Candle(
                 timestamp=float(i * 3600),

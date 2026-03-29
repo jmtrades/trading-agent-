@@ -72,3 +72,27 @@ class MarketData:
 
     def adx(self, period: int = 14) -> np.ndarray:
         return ind.adx(self.high, self.low, self.close, period)
+
+    def stochastic(self, k_period: int = 14, d_period: int = 3):
+        return ind.stochastic(self.high, self.low, self.close, k_period, d_period)
+
+    def obv(self) -> np.ndarray:
+        return ind.obv(self.close, self.volume)
+
+    def ichimoku(self, tenkan: int = 9, kijun: int = 26, senkou_b: int = 52):
+        return ind.ichimoku(self.high, self.low, self.close, tenkan, kijun, senkou_b)
+
+    def williams_r(self, period: int = 14) -> np.ndarray:
+        return ind.williams_r(self.high, self.low, self.close, period)
+
+    def mfi(self, period: int = 14) -> np.ndarray:
+        return ind.mfi(self.high, self.low, self.close, self.volume, period)
+
+    def roc(self, period: int = 12) -> np.ndarray:
+        return ind.price_rate_of_change(self.close, period)
+
+    def keltner_channels(self, ema_period: int = 20, atr_mult: float = 2.0):
+        return ind.keltner_channels(self.high, self.low, self.close, ema_period, 14, atr_mult)
+
+    def squeeze(self):
+        return ind.squeeze_detector(self.high, self.low, self.close)

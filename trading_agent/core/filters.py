@@ -65,21 +65,37 @@ class ConsensusFilter:
         self.min_agreement = min_agreement
 
     def check(self, signals: list[StrategySignal], side: OrderSide) -> tuple[bool, str]:
-        """Check if enough strategies agree on the direction."""
+        """Check if enough strategies agree on the direction.
+
+        Adapts to the number of relevant strategies:
+        - 3+ strategies: need min_agreement agreeing, no strong opposition
+        - 2 strategies: need at least 1 agreeing, no opposition
+        - 1 strategy: always passes (pre-filtered by regime)
+        """
         if side == OrderSide.BUY:
             agreeing = sum(1 for s in signals if s.signal.value > 0)
             opposing = sum(1 for s in signals if s.signal.value < 0)
+            strong_opposing = sum(1 for s in signals if s.signal.value <= -2)
         else:
             agreeing = sum(1 for s in signals if s.signal.value < 0)
             opposing = sum(1 for s in signals if s.signal.value > 0)
+            strong_opposing = sum(1 for s in signals if s.signal.value >= 2)
 
-        # Must have minimum agreement AND no strong opposition
-        if agreeing >= self.min_agreement and opposing == 0:
-            return True, f"{agreeing}/{len(signals)} strategies agree, 0 opposing"
+        n = len(signals)
+
+        # No strong opposition ever allowed
+        if strong_opposing > 0:
+            return False, f"Strong opposition: {strong_opposing} strongly oppose"
+
+        # Adaptive agreement threshold
+        required = min(self.min_agreement, max(1, n - 1))
+
+        if agreeing >= required and opposing == 0:
+            return True, f"{agreeing}/{n} strategies agree, 0 opposing"
         elif opposing > 0:
-            return False, f"Conflicting signals: {agreeing} agree, {opposing} oppose"
+            return False, f"Conflicting: {agreeing} agree, {opposing} oppose"
         else:
-            return False, f"Only {agreeing}/{self.min_agreement} required strategies agree"
+            return False, f"Only {agreeing}/{required} required strategies agree"
 
 
 class TradeQualityScorer:
