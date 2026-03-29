@@ -5,6 +5,8 @@ Simulates trading with realistic conditions:
 - Full filter pipeline (regime, consensus, MTF, quality, cooldown)
 - Slippage simulation
 - Commission handling
+- Prop firm compliance enforcement
+- Multi-scenario training across 18 market conditions
 - Full trade logging and statistics
 """
 import numpy as np
@@ -12,6 +14,7 @@ from .models import Candle, Signal, OrderSide
 from .market_data import MarketData
 from .risk_manager import RiskManager
 from .regime_detector import RegimeDetector, MarketRegime
+from .scenarios import MarketScenario
 from .filters import (
     MultiTimeframeFilter, ConsensusFilter,
     TradeQualityScorer, CooldownFilter, SignalPersistenceFilter,
@@ -21,17 +24,21 @@ from .filters import (
 class Backtester:
 
     def __init__(self, config: dict, strategies: list, initial_capital: float = 10000.0,
-                 slippage_pct: float = 0.001, commission_pct: float = 0.001):
+                 slippage_pct: float = 0.001, commission_pct: float = 0.001,
+                 prop_firm: str = None, prop_phase: str = "challenge"):
         self.config = config
         self.strategies = strategies
         self.initial_capital = initial_capital
         self.slippage_pct = slippage_pct
         self.commission_pct = commission_pct
+        self.prop_firm = prop_firm
+        self.prop_phase = prop_phase
 
     def run(self, candles: list[Candle], warmup: int = 50) -> dict:
         """Run backtest on historical candles with full filter pipeline."""
         market_data = MarketData(max_candles=500)
-        risk_manager = RiskManager(self.config.get("risk", {}), self.initial_capital)
+        risk_manager = RiskManager(self.config.get("risk", {}), self.initial_capital,
+                                   prop_firm=self.prop_firm, prop_phase=self.prop_phase)
 
         # Initialize filters
         regime_detector = RegimeDetector(lookback=50)
@@ -287,3 +294,65 @@ class Backtester:
             price = new_price
 
         return candles
+
+    def run_scenario(self, scenario: str, n_candles: int = 500,
+                     warmup: int = 50) -> dict:
+        """Run backtest on a specific market scenario."""
+        candles = MarketScenario.generate(scenario, n_candles)
+        result = self.run(candles, warmup=warmup)
+        result["scenario"] = scenario
+        return result
+
+    def train_all_scenarios(self, n_candles: int = 500,
+                            warmup: int = 50) -> dict:
+        """Train and validate across ALL 18 market scenarios.
+
+        Returns aggregate results plus per-scenario breakdown.
+        """
+        scenarios = MarketScenario.all_scenarios()
+        results = {}
+        total_trades = 0
+        total_wins = 0
+        total_losses = 0
+        total_pnl = 0.0
+        scenarios_survived = 0
+        blown_scenarios = []
+
+        for scenario in scenarios:
+            # Fresh backtester state for each scenario
+            bt = Backtester(self.config, self.strategies, self.initial_capital,
+                            self.slippage_pct, self.commission_pct,
+                            self.prop_firm, self.prop_phase)
+            result = bt.run_scenario(scenario, n_candles, warmup)
+            results[scenario] = result
+
+            trades = result.get("total_trades", 0)
+            total_trades += trades
+            wins = int(result.get("win_rate", 0) * trades)
+            total_wins += wins
+            total_losses += trades - wins
+            total_pnl += result.get("total_pnl", 0)
+
+            # Check if prop firm account survived
+            prop = result.get("prop_firm")
+            if prop and prop.get("is_blown"):
+                blown_scenarios.append(scenario)
+            else:
+                scenarios_survived += 1
+
+        overall_wr = total_wins / total_trades if total_trades > 0 else 0
+
+        return {
+            "scenarios": results,
+            "summary": {
+                "total_scenarios": len(scenarios),
+                "scenarios_survived": scenarios_survived,
+                "blown_scenarios": blown_scenarios,
+                "total_trades": total_trades,
+                "total_wins": total_wins,
+                "total_losses": total_losses,
+                "overall_win_rate": overall_wr,
+                "total_pnl": total_pnl,
+                "avg_pnl_per_scenario": total_pnl / len(scenarios),
+            },
+        }

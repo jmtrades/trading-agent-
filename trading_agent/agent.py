@@ -35,7 +35,8 @@ logger = logging.getLogger("AlphaWin")
 class AlphaWinAgent:
     """The winning trading agent."""
 
-    def __init__(self, config_path: Optional[str] = None, config: Optional[dict] = None):
+    def __init__(self, config_path: Optional[str] = None, config: Optional[dict] = None,
+                 prop_firm: Optional[str] = None, prop_phase: str = "challenge"):
         if config is not None:
             self.config = config
         elif config_path:
@@ -46,10 +47,16 @@ class AlphaWinAgent:
             with open(config_file) as f:
                 self.config = json.load(f)
 
+        self.prop_firm = prop_firm
+        self.prop_phase = prop_phase
+        initial_capital = self.config.get("agent", {}).get("initial_capital", 10000.0)
+
         self.market_data = MarketData(max_candles=500)
         self.risk_manager = RiskManager(
             self.config.get("risk", {}),
-            initial_capital=self.config.get("agent", {}).get("initial_capital", 10000.0)
+            initial_capital=initial_capital,
+            prop_firm=prop_firm,
+            prop_phase=prop_phase,
         )
 
         # Initialize strategies
@@ -254,5 +261,6 @@ class AlphaWinAgent:
     def backtest(self, candles: list[Candle]) -> dict:
         """Run a backtest with the agent's current configuration."""
         from .core.backtester import Backtester
-        bt = Backtester(self.config, self.strategies, self.risk_manager.initial_capital)
+        bt = Backtester(self.config, self.strategies, self.risk_manager.initial_capital,
+                        prop_firm=self.prop_firm, prop_phase=self.prop_phase)
         return bt.run(candles, warmup=self._warmup)

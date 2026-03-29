@@ -16,7 +16,8 @@ from .market_data import MarketData
 
 class RiskManager:
 
-    def __init__(self, config: dict, initial_capital: float = 10000.0):
+    def __init__(self, config: dict, initial_capital: float = 10000.0,
+                 prop_firm: str = None, prop_phase: str = "challenge"):
         self.config = config
         self.initial_capital = initial_capital
         self.capital = initial_capital
@@ -31,6 +32,14 @@ class RiskManager:
         self._consecutive_losses = 0
         self._max_consecutive_losses = 0
         self._equity_history: list[float] = [initial_capital]
+
+        # Prop firm compliance (optional)
+        self.prop_compliance = None
+        if prop_firm:
+            from .prop_firm import PropFirmCompliance
+            self.prop_compliance = PropFirmCompliance(
+                firm=prop_firm, phase=prop_phase, account_size=initial_capital
+            )
 
     @property
     def open_positions(self) -> list[Position]:
@@ -69,6 +78,10 @@ class RiskManager:
         # Graduated response to consecutive losses
         if self._consecutive_losses >= 5:
             return False, f"Too many consecutive losses ({self._consecutive_losses})"
+
+        # Prop firm compliance check
+        if self.prop_compliance and self.prop_compliance.state.is_blown:
+            return False, "Prop firm account blown"
 
         return True, "OK"
 
@@ -203,6 +216,16 @@ class RiskManager:
         # Scale size with signal confidence
         quantity *= signal.confidence
 
+        # Prop firm: cap risk to safe amount and run pre-trade check
+        if self.prop_compliance:
+            proposed_risk = quantity * stop_distance * current_price
+            safe_risk = self.prop_compliance.get_safe_risk_amount()
+            if proposed_risk > safe_risk and safe_risk > 0:
+                quantity = (safe_risk / (stop_distance * current_price))
+            allowed, reason = self.prop_compliance.check_pre_trade(proposed_risk)
+            if not allowed:
+                return None
+
         return Order(
             side=side,
             order_type=OrderType.MARKET,
@@ -264,6 +287,10 @@ class RiskManager:
                 self.trade_history.append(trade_record)
                 self.closed_positions.append(pos)
                 exits.append(trade_record)
+
+                # Record with prop firm compliance
+                if self.prop_compliance:
+                    self.prop_compliance.record_trade_result(pnl)
 
         # Update peak capital and equity history
         total_value = self.capital + sum(
@@ -328,6 +355,10 @@ class RiskManager:
             stats["expectancy"] = self.total_pnl / total_trades
         else:
             stats["expectancy"] = 0
+
+        # Prop firm status
+        if self.prop_compliance:
+            stats["prop_firm"] = self.prop_compliance.get_status()
 
         # Win/Loss streaks
         if self.trade_history:
